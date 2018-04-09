@@ -34,7 +34,11 @@ void sendmockdata()
 
 }
 
-
+/// <summary>
+/// Wakes the module and sends payload over the Sigfox network.
+/// In the end put the module to sleep.
+/// </summary>
+/// <returns></returns>
 bool sendPayload()
 {
 #ifdef DEBUG

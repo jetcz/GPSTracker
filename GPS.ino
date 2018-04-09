@@ -1,6 +1,9 @@
+/// <summary>
+/// Obtain GPS data - this may take a while
+/// </summary>
 void getGPSData()
 {
-	enableGPS(true); //wake up in case we are in pwr saving
+	powerDevices(true); //wake up in case we are in pwr saving
 
 	unsigned long fixing_start = millis();
 
@@ -74,6 +77,11 @@ void getGPSData()
 
 }
 
+/// <summary>
+/// Create readable datetime from time_t object
+/// </summary>
+/// <param name=""></param>
+/// <returns></returns>
 String parseUnixTime(time_t)
 {
 	return String(day())
@@ -84,11 +92,9 @@ String parseUnixTime(time_t)
 		+ ":" + String(second());
 }
 
-void enableGPS(bool enable)
-{
-	//todo
-}
-
+/// <summary>
+/// Sets current time from data stored in GPS, call only if we have valid GPS fix
+/// </summary>
 void setTime()
 {
 	int Year;
@@ -102,7 +108,15 @@ void setTime()
 	}
 }
 
-
+/// <summary>
+/// Calculates distance between two GPs coordinates
+/// Not used
+/// </summary>
+/// <param name="flat1"></param>
+/// <param name="flon1"></param>
+/// <param name="flat2"></param>
+/// <param name="flon2"></param>
+/// <returns></returns>
 float calcDist(float flat1, float flon1, float flat2, float flon2)
 {
 	float dist_calc = 0;
