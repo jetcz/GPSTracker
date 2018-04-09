@@ -29,7 +29,7 @@
 #define IGNITION_THRESHOLD_VOLTAGE 14
 //minimum voltage step between battery operation and engine operation
 #define IGNITION_THRESHOLD_VOLTAGE_DIFF 1.5
-//voltage calibration const
+//voltage calibration const (for 10k resistor connected to A0 of the witty board)
 #define VOLTAGE_CALIBRATION_CONST 0.0206185567
 //maximum allowed time for acquiring gps fix
 #define GPSFIX_MAX_TIMEOUT_MINUTES 3
@@ -37,7 +37,7 @@
 #define GPSFIX_MAX_AGE_MINUTES 3
 
 /// <summary>
-/// Provides byte representation of the payload
+/// Provides byte representation of the float values int the payload
 /// </summary>
 typedef union {
 	float val;
@@ -73,6 +73,7 @@ unsigned long msg_frequency = MSG_FREQ_START_RATE_ENGINE_MINUTES * 60 * 1000;
 
 bool ignition_changed = false;
 bool engine_running = false;
+bool usb_powered = false;
 
 int day_number = -1;
 int daily_message_count = 0;
@@ -128,18 +129,20 @@ void loop()
 		processOnIgnitionChanged();
 		ESP.deepSleep(5e6);
 	}
+	else if (usb_powered)
+	{
+		processOnUSBPower();
+		ESP.deepSleep(5e6);
+	}
+	else if (engine_running)
+	{
+		processOnEngineRunning();
+		ESP.deepSleep(5e6);
+	}
 	else
 	{
-		if (engine_running)
-		{
-			processOnEngineRunning();
-			ESP.deepSleep(3e6);
-		}
-		else
-		{
-			processOnBattery();
-			ESP.deepSleep(20e6);
-		}
+		processOnBattery();
+		ESP.deepSleep(20e6);
 	}
 }
 
@@ -167,7 +170,7 @@ void processOnIgnitionChanged()
 	serviceMessageCounter();
 
 	if (payload.valid
-		&& payload.timestamp - payload_prev.timestamp > 60 * 1000 //send only if last payload is more than 60 sec old
+		&& payload.timestamp - payload_prev.timestamp > 15 * 1000 //send only if last payload is more than 15 sec old
 		&& sendPayload())
 	{
 		daily_message_count++;
@@ -247,6 +250,26 @@ void processOnBattery()
 }
 
 /// <summary>
+/// Process when powered from usb (debug)
+/// </summary>
+void processOnUSBPower()
+{
+#ifdef DEBUG
+	Serial.print("Processing usb powered");
+#endif // DEBUG
+
+	getGPSData();
+	serviceMessageCounter();
+
+	if (payload.valid
+		&& payload.timestamp - payload_prev.timestamp > 60 * 1000 //send only if last payload is more than 60 sec old
+		&& sendPayload())
+	{
+		daily_message_count++;
+	}
+}
+
+/// <summary>
 /// Resets the message counter after UTC midnight.
 /// </summary>
 void serviceMessageCounter()
@@ -299,6 +322,7 @@ void monitorCarVoltage()
 #endif // DEBUG
 
 	engine_running = voltage > IGNITION_THRESHOLD_VOLTAGE;
+	usb_powered = voltage > 4 && voltage < 6;
 
 	if (voltage_prev = 0) //after bootup
 	{
