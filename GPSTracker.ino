@@ -31,8 +31,6 @@
 #define MSG_FREQ_THROTTLE_RATE 2
 //voltage threshold to decide if we are operating on battery or engine
 #define IGNITION_THRESHOLD_VOLTAGE 14
-//minimum voltage step between battery operation and engine operation
-#define IGNITION_THRESHOLD_VOLTAGE_DIFF 1.5
 //voltage calibration const (for 10k resistor connected to A0 of the witty board)
 #define VOLTAGE_CALIBRATION_CONST 0.0206185567
 //maximum allowed time for acquiring gps fix
@@ -93,15 +91,15 @@ void setup()
 	delay(10);
 
 	ArduinoOTA.onStart([]() {
-		Serial.println("Start");
+		Serial.println("OTA Start");
 	});
 
 	ArduinoOTA.onEnd([]() {
-		Serial.println("\nEnd");
+		Serial.println("OTA End");
 	});
 
 	ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-		Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+		Serial.printf("OTA Progress: %u%%\r\n", (progress / (total / 100)));
 	});
 
 	ArduinoOTA.onError([](ota_error_t error) {
@@ -124,7 +122,7 @@ void setup()
 
 	enableAP(true);
 
-	ArduinoOTA.setHostname("APOTA");
+	ArduinoOTA.setHostname("GPSTrackerOTA");
 	ArduinoOTA.begin();
 
 	//testSigfoxModule();
@@ -135,7 +133,6 @@ void setup()
 	time_t t = makeTime(e);
 	setTime(t);
 #endif // DEBUG_FAKE_GPS
-
 
 #if DEBUG
 	Serial.println("Setup done");
@@ -151,10 +148,6 @@ void enableAP(bool enable)
 {
 	if (enable)
 	{
-#if DEBUG
-		Serial.println("Enabling Wifi AP");
-#endif // DEBUG
-
 		last_ap_start = millis();
 		WiFi.forceSleepWake();
 		WiFi.persistent(false);
@@ -167,9 +160,6 @@ void enableAP(bool enable)
 	}
 	else
 	{
-#if DEBUG
-		Serial.println("Disabling Wifi AP");
-#endif // DEBUG
 		WiFi.mode(WIFI_OFF);
 		WiFi.forceSleepBegin();
 #if DEBUG
@@ -216,13 +206,8 @@ void loop()
 
 	if (ignition_changed)
 	{
-		if (engine_running)
-		{
-			enableAP(true);
-		}
-
+		enableAP(engine_running);
 		processOnIgnitionChanged();
-		delay(3000);
 	}
 	else if (usb_powered)
 	{
@@ -232,12 +217,10 @@ void loop()
 	else if (engine_running)
 	{
 		processOnEngineRunning();
-	
 	}
 	else
 	{
 		processOnBattery();
-	
 	}
 
 	if (WiFi.getMode() == WIFI_AP
@@ -327,7 +310,7 @@ void processOnBattery()
 	if (daily_message_count <= MSG_MAX_DAILY_COUNT - MSG_RESERVED_COUNT
 		&& millis() - payload_prev.timestamp > MSG_FREQ_RATE_BATTERY_MINUTES * 60 * 1000)
 	{
-		for (int i = 0; i < 5; i++) //try sending few times
+		for (int i = 0; i < 10; i++) //try sending few times
 		{
 			getGPSData();
 
@@ -341,7 +324,7 @@ void processOnBattery()
 			else
 			{
 				//something failed, wait for a while
-				delay(30000);
+				delay(10000);
 			}
 		}
 
@@ -409,7 +392,7 @@ void adjustMessageInterval()
 /// </summary>
 void monitorCarVoltage()
 {
-	static float voltage_prev = 0;
+	static bool engine_running_prev = false;
 
 	int counts = analogRead(IGNITION_SENSE_PIN);
 	float voltage = counts * VOLTAGE_CALIBRATION_CONST;
@@ -428,18 +411,6 @@ void monitorCarVoltage()
 	engine_running = voltage > IGNITION_THRESHOLD_VOLTAGE;
 	usb_powered = voltage > 4 && voltage < 6;
 
-	if (voltage_prev = 0) //after bootup
-	{
-		voltage_prev = voltage;
-	}
-	else
-	{
-		bool ignition_turned_off = !engine_running
-			&& voltage_prev + IGNITION_THRESHOLD_VOLTAGE_DIFF > voltage;
-		bool ignition_turned_on = engine_running
-			&& voltage_prev < voltage + IGNITION_THRESHOLD_VOLTAGE_DIFF;
-
-		ignition_changed = ignition_turned_off || ignition_turned_on;
-		voltage_prev = voltage;
-	}
+	ignition_changed = engine_running_prev != engine_running;
+	engine_running_prev = engine_running;
 }
