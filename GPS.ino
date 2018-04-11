@@ -3,11 +3,22 @@
 /// </summary>
 void getGPSData()
 {
+	if (DEBUG_FAKE_GPS)
+	{
+		payload.lat.val = 50.203917;
+		payload.lon.val = 15.834115;
+		payload.spd = 23;
+		payload.valid = true;
+		payload.timestamp = millis();
+		return;
+	}
+
+
 	powerDevices(true); //wake up in case we are in pwr saving
 
 	unsigned long fixing_start = millis();
 
-	while (!payload.valid || millis() - fixing_start < GPSFIX_MAX_TIMEOUT_MINUTES * 60 * 1000)
+	while (!payload.valid && millis() - fixing_start < GPSFIX_MAX_TIMEOUT_MINUTES * 60 * 1000)
 	{
 		if (GPS.available())
 		{
@@ -41,10 +52,10 @@ void getGPSData()
 		else
 		{
 #ifdef DEBUG
-			Serial.println("GPS not available, going to sleep for 3 sec");
+			Serial.println("GPS not available, waiting 1 sec");
 #endif // DEBUG
 
-			ESP.deepSleep(3e6); //sleep 3 sec
+			delay(1000);
 		}
 	}
 

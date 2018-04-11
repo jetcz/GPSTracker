@@ -1,8 +1,12 @@
 #include <Timezone.h>
 #include <TinyGPS.h>    
 #include <SoftwareSerial.h>
+#include <ESP8266WiFi.h>
+#include <ArduinoOTA.h>
 
 #define DEBUG true
+#define DEBUG_FAKE_GPS true
+#define DEBUG_FAKE_SIGFOX true
 
 //pins
 #define MODULES_POWER D8
@@ -78,20 +82,104 @@ bool usb_powered = false;
 int day_number = -1;
 int daily_message_count = 0;
 
+unsigned long last_ap_start = 0;
+
+
 void setup()
 {
+#if DEBUG
+	Serial.begin(9600);
+	while (!Serial) {}
+	delay(10);
+
+	ArduinoOTA.onStart([]() {
+		Serial.println("Start");
+	});
+
+	ArduinoOTA.onEnd([]() {
+		Serial.println("\nEnd");
+	});
+
+	ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+		Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+	});
+
+	ArduinoOTA.onError([](ota_error_t error) {
+		Serial.printf("Error[%u]: ", error);
+		if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
+		else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+		else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
+		else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
+		else if (error == OTA_END_ERROR) Serial.println("End Failed");
+	});
+
+#endif // DEBUG
+
 	pinMode(MODULES_POWER, OUTPUT);
 
-	Serial.begin(9600);
 	Sigfox.begin(9600);
 	GPS.begin(4800);
 
 	payload_prev.timestamp = -9999999;
 
+	enableAP(true);
+
+	ArduinoOTA.setHostname("APOTA");
+	ArduinoOTA.begin();
+
 	//testSigfoxModule();
 	//sendmockdata();
 
+#if DEBUG_FAKE_GPS
+	tmElements_t e = { 0, 0, 0, 1, 1, 1999 - 1970 };
+	time_t t = makeTime(e);
+	setTime(t);
+#endif // DEBUG_FAKE_GPS
+
+
+#if DEBUG
+	Serial.println("Setup done");
+#endif // DEBUG
+
 }
+
+/// <summary>
+/// Enable disable wifi AP
+/// </summary>
+/// <param name="enable"></param>
+void enableAP(bool enable)
+{
+	if (enable)
+	{
+#if DEBUG
+		Serial.println("Enabling Wifi AP");
+#endif // DEBUG
+
+		last_ap_start = millis();
+		WiFi.forceSleepWake();
+		WiFi.persistent(false);
+		WiFi.mode(WIFI_AP);
+		WiFi.softAP("GPSTracker", "12345678");
+
+#if DEBUG
+		Serial.println("Wifi AP enabled");
+#endif // DEBUG
+	}
+	else
+	{
+#if DEBUG
+		Serial.println("Disabling Wifi AP");
+#endif // DEBUG
+		WiFi.mode(WIFI_OFF);
+		WiFi.forceSleepBegin();
+#if DEBUG
+		Serial.println("Wifi AP disabled");
+#endif // DEBUG
+	}
+
+	delay(1);
+}
+
 
 void testSigfoxModule()
 {
@@ -120,31 +208,48 @@ void testSigfoxModule()
 
 void loop()
 {
+	ArduinoOTA.handle();
+
 	monitorCarVoltage();
 
 	adjustMessageInterval();
 
 	if (ignition_changed)
 	{
+		if (engine_running)
+		{
+			enableAP(true);
+		}
+
 		processOnIgnitionChanged();
-		ESP.deepSleep(5e6);
+		delay(3000);
 	}
 	else if (usb_powered)
 	{
 		processOnUSBPower();
-		ESP.deepSleep(5e6);
+
 	}
 	else if (engine_running)
 	{
 		processOnEngineRunning();
-		ESP.deepSleep(5e6);
+	
 	}
 	else
 	{
 		processOnBattery();
-		ESP.deepSleep(20e6);
+	
 	}
+
+	if (WiFi.getMode() == WIFI_AP
+		&& WiFi.softAPgetStationNum() == 0
+		&& millis() > last_ap_start + 1 * 60 * 1000)
+	{
+		enableAP(false);
+	}
+
+	delay(1000);
 }
+
 
 /// <summary>
 /// Power on/off Sigfox module and GPS module.
@@ -162,7 +267,7 @@ void powerDevices(bool enable)
 /// </summary>
 void processOnIgnitionChanged()
 {
-#ifdef DEBUG
+#if DEBUG
 	Serial.print("Processing ignition changed");
 #endif // DEBUG
 
@@ -189,7 +294,7 @@ void processOnIgnitionChanged()
 /// </summary>
 void processOnEngineRunning()
 {
-#ifdef DEBUG
+#if DEBUG
 	Serial.print("Processing engine running");
 #endif // DEBUG
 
@@ -213,7 +318,7 @@ void processOnEngineRunning()
 /// </summary>
 void processOnBattery()
 {
-#ifdef DEBUG
+#if DEBUG
 	Serial.print("Processing on battery");
 #endif // DEBUG
 
@@ -222,7 +327,7 @@ void processOnBattery()
 	if (daily_message_count <= MSG_MAX_DAILY_COUNT - MSG_RESERVED_COUNT
 		&& millis() - payload_prev.timestamp > MSG_FREQ_RATE_BATTERY_MINUTES * 60 * 1000)
 	{
-		for (int i = 0; i < 3; i++) //try sending few times
+		for (int i = 0; i < 5; i++) //try sending few times
 		{
 			getGPSData();
 
@@ -236,7 +341,7 @@ void processOnBattery()
 			else
 			{
 				//something failed, wait for a while
-				ESP.deepSleep(60e6); //sleep 60 sec
+				delay(30000);
 			}
 		}
 
@@ -254,10 +359,6 @@ void processOnBattery()
 /// </summary>
 void processOnUSBPower()
 {
-#ifdef DEBUG
-	Serial.print("Processing usb powered");
-#endif // DEBUG
-
 	getGPSData();
 	serviceMessageCounter();
 
@@ -313,12 +414,15 @@ void monitorCarVoltage()
 	int counts = analogRead(IGNITION_SENSE_PIN);
 	float voltage = counts * VOLTAGE_CALIBRATION_CONST;
 
-#ifdef DEBUG
-	Serial.println();
-	Serial.print("Car voltage counts: ");
-	Serial.println(counts);
-	Serial.print("Car voltage: ");
-	Serial.println(voltage);
+#if DEBUG
+	if (!usb_powered)
+	{
+		Serial.println();
+		Serial.print("Car voltage counts: ");
+		Serial.println(counts);
+		Serial.print("Car voltage: ");
+		Serial.println(voltage);
+	}
 #endif // DEBUG
 
 	engine_running = voltage > IGNITION_THRESHOLD_VOLTAGE;

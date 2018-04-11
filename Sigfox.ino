@@ -41,7 +41,11 @@ void sendmockdata()
 /// <returns></returns>
 bool sendPayload()
 {
-#ifdef DEBUG
+#if DEBUG_FAKE_SIGFOX
+	return true;
+#endif // DEBUG_FAKE_SIGFOX
+
+#if DEBUG
 	Serial.println("Sending data over Sigfox");
 #endif // DEBUG
 
@@ -70,7 +74,7 @@ bool sendPayload()
 
 	Sigfox.print("AT$P=1"); //go to sleep
 
-#ifdef DEBUG
+#if DEBUG
 	Serial.print("Sigfox response: ");
 	Serial.println(response);
 #endif // DEBUG
