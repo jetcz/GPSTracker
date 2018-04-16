@@ -6,12 +6,12 @@
 
 #define DEBUG true
 #define DEBUG_FAKE_GPS true
-#define DEBUG_FAKE_SIGFOX true
+#define DEBUG_FAKE_SIGFOX false
 
 //pins
 #define MODULES_POWER D8
-#define SIGFOX_RX D5
-#define SIGFOX_TX D1
+#define SIGFOX_RX D5 //gpio 14 module tx
+#define SIGFOX_TX D1 //gpio 5 module rx
 #define GPS_RX D6
 #define GPS_TX D7
 #define IGNITION_SENSE_PIN A0
@@ -27,8 +27,8 @@
 #define MSG_FREQ_START_RATE_ENGINE_MINUTES 5
 //how often we send message when operating on engine running - max period
 #define MSG_FREQ_MAX_RATE_ENGINE_MINUTES 15
-//rate at which we are throttling sending messages when engine running, 1 means add one minute every hour, 2 means add two minutes every hour... until MSG_FREQ_MAX_RATE_ENGINE_MINUTES is reached
-#define MSG_FREQ_THROTTLE_RATE 2
+//rate at which we are throttling sending messages when engine running, 1 means add one minute every hour, 2 means add two minutes every hour of driving... until MSG_FREQ_MAX_RATE_ENGINE_MINUTES is reached
+#define MSG_FREQ_THROTTLE_RATE 1.8
 //voltage threshold to decide if we are operating on battery or engine
 #define IGNITION_THRESHOLD_VOLTAGE 14
 //voltage calibration const (for 10k resistor connected to A0 of the witty board)
@@ -81,12 +81,15 @@ int day_number = -1;
 int daily_message_count = 0;
 
 unsigned long last_ap_start = 0;
+unsigned long last_ignition_change = 0;
 
+String response = "NA";
 
 void setup()
 {
 #if DEBUG
 	Serial.begin(9600);
+	Serial.setTimeout(10);
 	while (!Serial) {}
 	delay(10);
 
@@ -116,6 +119,7 @@ void setup()
 	pinMode(MODULES_POWER, OUTPUT);
 
 	Sigfox.begin(9600);
+	Sigfox.setTimeout(10);
 	GPS.begin(4800);
 
 	payload_prev.timestamp = -9999999;
@@ -126,7 +130,6 @@ void setup()
 	ArduinoOTA.begin();
 
 	//testSigfoxModule();
-	//sendmockdata();
 
 #if DEBUG_FAKE_GPS
 	tmElements_t e = { 0, 0, 0, 1, 1, 1999 - 1970 };
@@ -173,25 +176,19 @@ void enableAP(bool enable)
 
 void testSigfoxModule()
 {
-	Sigfox.print("AT");
-	Sigfox.print("\n");
-	delay(100);
-	if (Sigfox.available())
+	Serial.println("powering modules");
+	powerDevices(true);
+	sendmockdata();
+	while (true)
 	{
-		Serial.write(Sigfox.read());
-	}
-	else
-	{
-		Serial.println("sigfox module not responding");
-		while (1)
-		{
-			if (Serial.available()) {
-				Sigfox.write(Serial.read());
-			}
 
-			if (Sigfox.available()) {
-				Serial.write(Sigfox.read());
-			}
+		if (Sigfox.available()) {
+			Serial.write(Sigfox.read());
+		}
+		// když dostaneme nìjaké znaky na poèítaèové sériové lince,
+		// odešleme je do Sigfox modulu
+		if (Serial.available()) {
+			Sigfox.write(Serial.read());
 		}
 	}
 }
@@ -241,6 +238,10 @@ void loop()
 void powerDevices(bool enable)
 {
 	digitalWrite(MODULES_POWER, enable);
+	if (enable)
+	{
+		delay(20); //let sigfox "boot"
+	}
 }
 
 /// <summary>
@@ -375,10 +376,11 @@ void adjustMessageInterval()
 	{
 		msg_frequency = MSG_FREQ_START_RATE_ENGINE_MINUTES * 60 * 1000; //reset the frequency on ignition change
 	}
-	else
+	else if (engine_running)
 	{
 		//this will gradually lower the frequency of how often we send messages with sigfox
-		unsigned long f = MSG_FREQ_START_RATE_ENGINE_MINUTES * 60 * 1000 + millis() / 60 / MSG_FREQ_THROTTLE_RATE;
+		unsigned long f = ((1 + daily_message_count / MSG_MAX_DAILY_COUNT)* MSG_FREQ_START_RATE_ENGINE_MINUTES * 60 * 1000)
+			+ ((millis() - last_ignition_change) / 60 / MSG_FREQ_THROTTLE_RATE);
 
 		if (f < MSG_FREQ_MAX_RATE_ENGINE_MINUTES * 60 * 1000)
 		{
@@ -412,5 +414,11 @@ void monitorCarVoltage()
 	usb_powered = voltage > 4 && voltage < 6;
 
 	ignition_changed = engine_running_prev != engine_running;
+
+	if (ignition_changed)
+	{
+		last_ignition_change = millis();
+	}
+
 	engine_running_prev = engine_running;
 }
