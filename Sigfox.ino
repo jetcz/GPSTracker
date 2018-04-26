@@ -1,21 +1,4 @@
 //AT$SF=D0D0484289587D4117
-void sendmockdata()
-{
-	payload.lat.val = 50.203917;
-	payload.lon.val = 14.834115;
-	payload.spd = 23;
-	payload.valid = true;
-
-	Serial.println("sending mock data");
-
-	if (sendPayload())
-		Serial.println("sukces");
-	else
-		Serial.println("fail");
-
-
-
-}
 
 /// <summary>
 /// Wakes the module and sends payload over the Sigfox network.
@@ -24,10 +7,6 @@ void sendmockdata()
 /// <returns></returns>
 bool sendPayload()
 {
-#if DEBUG_FAKE_SIGFOX
-	return true;
-#endif // DEBUG_FAKE_SIGFOX
-
 #if DEBUG
 	Serial.println("Sending data over Sigfox");
 #endif // DEBUG	

@@ -1,72 +1,51 @@
 /// <summary>
+/// Feed gps object with sentences from the GPS module
+/// </summary>
+void feedGPS()
+{
+	while (GPS.available() > 0)
+	{
+		if (tgps.encode(GPS.read()))
+		{
+			getGPSData();
+		}
+	}
+}
+
+/// /// <summary>
 /// Obtain GPS data - this may take a while
 /// </summary>
 void getGPSData()
 {
-	if (DEBUG_FAKE_GPS)
+	if (tgps.location.isValid()) //&& tgps.date.age() < 1500
 	{
-		payload.lat.val = 50.203917;
-		payload.lon.val = 15.834115;
-		payload.spd = 23;
+		Serial.println("payload valid");
+		payload.lat.val = (float)tgps.location.lat();
+		payload.lon.val = (float)tgps.location.lng();
+		payload.spd = (byte)tgps.speed.kmph();
+
 		payload.valid = true;
 		payload.timestamp = millis();
-		return;
 	}
-
-
-	powerDevices(true); //wake up in case we are in pwr saving
-
-	unsigned long fixing_start = millis();
-
-	while (!payload.valid && millis() - fixing_start < GPSFIX_MAX_TIMEOUT_MINUTES * 60 * 1000)
+	else
 	{
-		if (GPS.available())
-		{
-			if (tgps.encode(GPS.read()))
-			{
-				tgps.f_get_position(&payload.lat.val, &payload.lon.val, &fix_age);
-				if (fix_age == TinyGPS::GPS_INVALID_AGE || fix_age > GPSFIX_MAX_AGE_MINUTES * 60 * 1000) //ignore fix older than 3 minutes
-				{
-#ifdef DEBUG
-					Serial.print("No fix detected or fix expired: ");
-					Serial.println(fix_age);
-#endif // DEBUG
-
-					payload.valid = false;
-				}
-				else
-				{
-					payload.valid = true;
-					payload.spd = (byte)tgps.f_speed_kmph();
-					payload.timestamp = millis();
-					setTime();
-				}
-			}
-			else
-			{
-#ifdef DEBUG
-				Serial.println("GPS provided invalid sentence");
-#endif // DEBUG
-			}
-		}
-		else
-		{
-#ifdef DEBUG
-			Serial.println("GPS not available, waiting 1 sec");
-#endif // DEBUG
-
-			delay(1000);
-		}
+		payload.valid = false;
 	}
+}
 
-#ifdef DEBUG
-
+/// <summary>
+/// Print gps data
+/// </summary>
+void printGPSData()
+{
 	if (payload.valid)
 	{
 		time_t utc = now();
 		time_t local = myTZ.toLocal(utc, &tcr);
 
-		Serial.println("GPS obtained position:");
+		Serial.print("GPS obtained position (");
+		Serial.print(tgps.satellites.value());
+		Serial.println("):");
 		Serial.print("LAT: ");
 		Serial.println(payload.lat.val);
 		Serial.print("LON: ");
@@ -74,7 +53,7 @@ void getGPSData()
 		Serial.print("SPD: ");
 		Serial.println(payload.spd);
 		Serial.print("Fix age: ");
-		Serial.println(fix_age);
+		Serial.println(tgps.date.age());
 		Serial.print("Current local datetime: ");
 		Serial.println(parseUnixTime(local));
 		Serial.print("Current utc datetime: ");
@@ -82,10 +61,21 @@ void getGPSData()
 	}
 	else
 	{
-		Serial.println("GPS did not obtain position!");
+		Serial.print("No fix detected or fix expired (");
+		Serial.print(tgps.satellites.value());
+		Serial.print("): ");
+		Serial.println(tgps.date.age());
+		Serial.print(F("DIAGS      Chars="));
+		Serial.print(tgps.charsProcessed());
+		Serial.print(F(" Sentences-with-Fix="));
+		Serial.print(tgps.sentencesWithFix());
+		Serial.print(F(" Failed-checksum="));
+		Serial.print(tgps.failedChecksum());
+		Serial.print(F(" Passed-checksum="));
+		Serial.println(tgps.passedChecksum());
 	}
-#endif // DEBUG
 
+	Serial.println();
 }
 
 /// <summary>
@@ -108,48 +98,14 @@ String parseUnixTime(time_t)
 /// </summary>
 void setTime()
 {
-	int Year;
-	byte Month, Day, Hour, Minute, Second;
-	tgps.crack_datetime(&Year, &Month, &Day, &Hour, &Minute, &Second, NULL, &fix_age);
-	if (fix_age < 1000)
+	if (tgps.date.isValid()
+		&& tgps.time.isValid()
+		&& tgps.date.year() >= 2018) //:-)
 	{
-		tmElements_t e = { Second, Minute, Hour, Day, Month, Year - 1970 };
-		time_t t = makeTime(e);
-		setTime(t);
+		setTime(tgps.time.hour(), tgps.time.minute(), tgps.time.second(), tgps.date.day(), tgps.date.month(), tgps.date.year());
+
+#ifdef DEBUG
+		Serial.println(parseUnixTime(now()));
+#endif // DEBUG		
 	}
-}
-
-/// <summary>
-/// Calculates distance between two GPs coordinates
-/// Not used
-/// </summary>
-/// <param name="flat1"></param>
-/// <param name="flon1"></param>
-/// <param name="flat2"></param>
-/// <param name="flon2"></param>
-/// <returns></returns>
-float calcDist(float flat1, float flon1, float flat2, float flon2)
-{
-	float dist_calc = 0;
-	float dist_calc2 = 0;
-	float diflat = 0;
-	float diflon = 0;
-
-	diflat = radians(flat2 - flat1);
-	flat1 = radians(flat1);
-	flat2 = radians(flat2);
-	diflon = radians((flon2)-(flon1));
-
-	dist_calc = (sin(diflat / 2.0)*sin(diflat / 2.0));
-	dist_calc2 = cos(flat1);
-	dist_calc2 *= cos(flat2);
-	dist_calc2 *= sin(diflon / 2.0);
-	dist_calc2 *= sin(diflon / 2.0);
-	dist_calc += dist_calc2;
-
-	dist_calc = (2 * atan2(sqrt(dist_calc), sqrt(1.0 - dist_calc)));
-
-	dist_calc *= 6371000.0; //Converting to meters
-
-	return dist_calc;
 }

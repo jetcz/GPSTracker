@@ -1,19 +1,18 @@
 #include <Timezone.h>
-#include <TinyGPS.h>    
+#include <TinyGPS++.h>    
 #include <SoftwareSerial.h>
 #include <ESP8266WiFi.h>
 #include <ArduinoOTA.h>
+#include <TimeAlarms.h>
 
 #define DEBUG true
-#define DEBUG_FAKE_GPS true
-#define DEBUG_FAKE_SIGFOX false
 
 //pins
 #define MODULES_POWER D8
 #define SIGFOX_RX D5 //gpio 14 module tx
 #define SIGFOX_TX D1 //gpio 5 module rx
-#define GPS_RX D6
-#define GPS_TX D7
+#define GPS_RX D6 //gpio 12 module tx
+#define GPS_TX D7 //gpio 13 module rx
 #define IGNITION_SENSE_PIN A0
 
 //constants
@@ -34,7 +33,7 @@
 //voltage calibration const (for 10k resistor connected to A0 of the witty board)
 #define VOLTAGE_CALIBRATION_CONST 0.0206185567
 //maximum allowed time for acquiring gps fix
-#define GPSFIX_MAX_TIMEOUT_MINUTES 3
+#define GPSFIX_MAX_TIMEOUT_MINUTES 10
 //maximum allowed time for which is gps fix considered valid
 #define GPSFIX_MAX_AGE_MINUTES 3
 
@@ -63,21 +62,20 @@ Payload payload_prev;
 
 SoftwareSerial Sigfox = SoftwareSerial(SIGFOX_RX, SIGFOX_TX);
 SoftwareSerial GPS = SoftwareSerial(GPS_RX, GPS_TX);
-TinyGPS tgps;
+TinyGPSPlus tgps;
 
 TimeChangeRule CEST = { "CEST", Last, Sun, Mar, 2, 120 };    //summer time = UTC + 2 hours
 TimeChangeRule CET = { "CET", Last, Sun, Oct, 3, 60 };		 //winter time = UTC + 1 hours
 Timezone myTZ(CEST, CET);
 TimeChangeRule *tcr;
 
-unsigned long fix_age;
 unsigned long msg_frequency = MSG_FREQ_START_RATE_ENGINE_MINUTES * 60 * 1000;
 
 bool ignition_changed = false;
 bool engine_running = false;
 bool usb_powered = false;
+bool ignition_change_serviced = true;
 
-int day_number = -1;
 int daily_message_count = 0;
 
 unsigned long last_ap_start = 0;
@@ -87,11 +85,12 @@ String response = "NA";
 
 void setup()
 {
+	delay(10);
+
 #if DEBUG
-	Serial.begin(9600);
+	Serial.begin(115200);
 	Serial.setTimeout(10);
 	while (!Serial) {}
-	delay(10);
 
 	ArduinoOTA.onStart([]() {
 		Serial.println("OTA Start");
@@ -119,29 +118,74 @@ void setup()
 	pinMode(MODULES_POWER, OUTPUT);
 
 	Sigfox.begin(9600);
-	Sigfox.setTimeout(10);
-	GPS.begin(4800);
+	Sigfox.setTimeout(10);
+
+	GPS.begin(9600);
 
 	payload_prev.timestamp = -9999999;
 
 	enableAP(true);
+	powerDevices(true);
 
 	ArduinoOTA.setHostname("GPSTrackerOTA");
 	ArduinoOTA.begin();
 
-	//testSigfoxModule();
+	Alarm.timerRepeat(1, monitorCarVoltage);
+	Alarm.timerRepeat(1, adjustMessageInterval);
+	Alarm.timerRepeat(1, process);
+	Alarm.timerRepeat(5, controlAP);
+	Alarm.timerRepeat(60, setTime);
 
-#if DEBUG_FAKE_GPS
-	tmElements_t e = { 0, 0, 0, 1, 1, 1999 - 1970 };
-	time_t t = makeTime(e);
-	setTime(t);
-#endif // DEBUG_FAKE_GPS
-
-#if DEBUG
+#ifdef DEBUG
+	Alarm.timerRepeat(5, printGPSData);
 	Serial.println("Setup done");
 #endif // DEBUG
-
 }
+
+void loop()
+{
+	Alarm.delay(0);
+	ArduinoOTA.handle();
+	feedGPS();
+}
+
+/// <summary>
+/// Alarm: process processes :)
+/// </summary>
+void process()
+{
+	if (ignition_changed || !ignition_change_serviced)
+	{
+		processOnIgnitionChanged();
+	}
+	else if (usb_powered)
+	{
+		processOnUSBPower();
+
+	}
+	else if (engine_running)
+	{
+		processOnEngineRunning();
+	}
+	else
+	{
+		processOnBattery();
+	}
+}
+
+/// <summary>
+/// Alarm: control disabling of ap
+/// </summary>
+void controlAP()
+{
+	if (WiFi.getMode() == WIFI_AP
+		&& WiFi.softAPgetStationNum() == 0
+		&& millis() > last_ap_start + 1 * 60 * 1000)
+	{
+		enableAP(false);
+	}
+}
+
 
 /// <summary>
 /// Enable disable wifi AP
@@ -173,64 +217,6 @@ void enableAP(bool enable)
 	delay(1);
 }
 
-
-void testSigfoxModule()
-{
-	Serial.println("powering modules");
-	powerDevices(true);
-	sendmockdata();
-	while (true)
-	{
-
-		if (Sigfox.available()) {
-			Serial.write(Sigfox.read());
-		}
-		// když dostaneme nìjaké znaky na poèítaèové sériové lince,
-		// odešleme je do Sigfox modulu
-		if (Serial.available()) {
-			Sigfox.write(Serial.read());
-		}
-	}
-}
-
-void loop()
-{
-	ArduinoOTA.handle();
-
-	monitorCarVoltage();
-
-	adjustMessageInterval();
-
-	if (ignition_changed)
-	{
-		enableAP(engine_running);
-		processOnIgnitionChanged();
-	}
-	else if (usb_powered)
-	{
-		processOnUSBPower();
-
-	}
-	else if (engine_running)
-	{
-		processOnEngineRunning();
-	}
-	else
-	{
-		processOnBattery();
-	}
-
-	if (WiFi.getMode() == WIFI_AP
-		&& WiFi.softAPgetStationNum() == 0
-		&& millis() > last_ap_start + 1 * 60 * 1000)
-	{
-		enableAP(false);
-	}
-
-	delay(1000);
-}
-
-
 /// <summary>
 /// Power on/off Sigfox module and GPS module.
 /// </summary>
@@ -255,18 +241,21 @@ void processOnIgnitionChanged()
 	Serial.print("Processing ignition changed");
 #endif // DEBUG
 
-	getGPSData();
-	serviceMessageCounter();
+	if (ignition_changed)
+	{
+		enableAP(engine_running);
+	}
 
 	if (payload.valid
 		&& payload.timestamp - payload_prev.timestamp > 15 * 1000 //send only if last payload is more than 15 sec old
 		&& sendPayload())
 	{
 		daily_message_count++;
+		ignition_change_serviced = true;
 
 		if (!engine_running)
 		{
-			powerDevices(false); //turn off gps and radio only on success
+			//powerDevices(false); //turn off gps and radio only on success
 		}
 	}
 }
@@ -282,7 +271,6 @@ void processOnEngineRunning()
 	Serial.print("Processing engine running");
 #endif // DEBUG
 
-	getGPSData();
 	serviceMessageCounter();
 
 	if (payload.valid
@@ -313,27 +301,26 @@ void processOnBattery()
 	{
 		for (int i = 0; i < 10; i++) //try sending few times
 		{
-			getGPSData();
-
 			if (payload.valid
 				&& sendPayload())
 			{
 				daily_message_count++;
-				powerDevices(false); //turn off gps and radio only on success
+				//powerDevices(false); //turn off gps only on success
 				break;
 			}
 			else
 			{
 				//something failed, wait for a while
-				delay(10000);
+				Alarm.delay(1000);
 			}
 		}
 
 		//if we failed to send the location on battery, disable gps and set timestamp of the payload to now to allow waiting and prevent battery discharge
 		if (!payload.valid)
 		{
-			powerDevices(false);
+			//powerDevices(false);
 			payload.timestamp = millis();
+			payload_prev = payload;
 		}
 	}
 }
@@ -343,11 +330,10 @@ void processOnBattery()
 /// </summary>
 void processOnUSBPower()
 {
-	getGPSData();
 	serviceMessageCounter();
 
 	if (payload.valid
-		&& payload.timestamp - payload_prev.timestamp > 60 * 1000 //send only if last payload is more than 60 sec old
+		&& payload.timestamp - payload_prev.timestamp > 10 * 60 * 1000 //send only if last payload is more than 180 sec old
 		&& sendPayload())
 	{
 		daily_message_count++;
@@ -359,6 +345,8 @@ void processOnUSBPower()
 /// </summary>
 void serviceMessageCounter()
 {
+	static int day_number = -1;
+
 	if (day() != day_number)
 	{
 		day_number = day();
@@ -418,6 +406,7 @@ void monitorCarVoltage()
 	if (ignition_changed)
 	{
 		last_ignition_change = millis();
+		ignition_change_serviced = false;
 	}
 
 	engine_running_prev = engine_running;
